@@ -13,3 +13,33 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Built files
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Gradle
+.gradle/
+build/
+
+
+
+# IDE
+.idea/
+
+# NDK
+.externalNativeBuild/
+.cxx/
+
+# Signing
+*.jks
+*.keystore
+keystore.properties
+
+# Logs
+*.log
+
+# Android Studio captures
+captures/
