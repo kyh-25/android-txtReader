@@ -1,5 +1,12 @@
 package com.example.textreader
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.platform.LocalDensity
+
 import android.content.Context
 import android.net.Uri
 import android.os.Bundle
@@ -27,6 +34,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.io.BufferedReader
 import java.io.InputStreamReader
+
+
+import androidx.compose.foundation.Canvas
+
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+
+import androidx.compose.ui.input.pointer.pointerInput
+import kotlinx.coroutines.launch
+
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
@@ -89,7 +106,6 @@ class MainActivity : ComponentActivity() {
         return ThemeMode.valueOf(name ?: ThemeMode.SYSTEM.name)
     }
 }
-
 @Composable
 fun ReaderScreen(
     lines: List<String>,
@@ -99,10 +115,20 @@ fun ReaderScreen(
     onLineChanged: (Int) -> Unit,
     onOpenClick: () -> Unit
 ) {
-    var current by rememberSaveable(startLine) { mutableStateOf(startLine) }
-    var fontSize by rememberSaveable { mutableStateOf(18f) }
+    var current by rememberSaveable(startLine, lines) { mutableIntStateOf(startLine) }
+    var fontSize by rememberSaveable { mutableFloatStateOf(18f) }
     val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+
     val scrollBarColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+
+    // [페이지 이동 다이얼로그 상태]
+    var showJumpDialog by remember { mutableStateOf(false) }
+    var inputPage by remember { mutableStateOf("") }
+
+    // [페이지 이동 로직]
+    val goToNext = { if (current < lines.lastIndex) { current++; onLineChanged(current) } }
+    val goToPrev = { if (current > 0) { current--; onLineChanged(current) } }
 
     LaunchedEffect(current) {
         if (lines.isNotEmpty()) {
@@ -111,7 +137,7 @@ fun ReaderScreen(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // 상단바 영역
+        // --- 상단바 (기존과 동일) ---
         ElevatedCard(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
             Column(modifier = Modifier.padding(8.dp)) {
                 Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
@@ -130,30 +156,14 @@ fun ReaderScreen(
             }
         }
 
-        // 본문 및 스크롤바 영역
+        // --- 본문 및 스크롤바 영역 ---
         Box(modifier = Modifier.weight(1f)) {
+            // 1. 텍스트 리스트
             LazyColumn(
                 state = listState,
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(horizontal = 16.dp)
-                    // ⭐ 스크롤바 그리기 로직
-                    .drawWithContent {
-                        drawContent() // 본문 먼저 그림
-                        val firstVisibleIndex = listState.firstVisibleItemIndex
-                        val totalItems = listState.layoutInfo.totalItemsCount
-                        if (totalItems > 0) {
-                            val elementHeight = size.height / totalItems
-                            val scrollbarHeight = size.height * (listState.layoutInfo.visibleItemsInfo.size.toFloat() / totalItems)
-                            val scrollbarOffsetY = firstVisibleIndex * elementHeight
-
-                            drawRect(
-                                color = scrollBarColor,
-                                topLeft = Offset(size.width - 8.dp.toPx(), scrollbarOffsetY),
-                                size = Size(4.dp.toPx(), scrollbarHeight)
-                            )
-                        }
-                    }
             ) {
                 itemsIndexed(lines) { i, line ->
                     Text(
@@ -164,18 +174,123 @@ fun ReaderScreen(
                             .fillMaxWidth()
                             .background(if (i == current) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
                             .padding(vertical = 4.dp, horizontal = 8.dp)
+                            .clickable { current = i; onLineChanged(i) } // 줄 클릭 시 이동
                     )
+                }
+            }
+
+            // 2. 좌우 터치 존
+            Row(modifier = Modifier.fillMaxSize()) {
+                Box(
+                    modifier = Modifier.fillMaxHeight().weight(1f).clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { goToPrev() })
+                Box(
+                    modifier = Modifier.fillMaxHeight().weight(1f).clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { goToNext() })
+            }
+
+            // 3.  스크롤바
+            if (lines.isNotEmpty()) {
+                val density = LocalDensity.current // Density 스코프 확보
+                val handleHeightDp = 60.dp
+
+                BoxWithConstraints(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .align(Alignment.CenterEnd)
+                        .width(40.dp)
+                        .pointerInput(lines.size) {
+                            detectDragGestures { change, _ ->
+                                val scrollPercentage =
+                                    (change.position.y / size.height).coerceIn(0f, 1f)
+                                val targetIndex = (lines.size * scrollPercentage).toInt()
+                                    .coerceIn(0, lines.lastIndex)
+                                coroutineScope.launch {
+                                    listState.scrollToItem(targetIndex)
+                                }
+                                change.consume()
+                            }
+                        }
+                        .pointerInput(lines.size) {
+                            detectTapGestures { offset ->
+                                val scrollPercentage = (offset.y / size.height).coerceIn(0f, 1f)
+                                val targetIndex = (lines.size * scrollPercentage).toInt()
+                                    .coerceIn(0, lines.lastIndex)
+                                coroutineScope.launch { listState.animateScrollToItem(targetIndex) }
+                            }
+                        }
+                ) {
+                    val totalItems = lines.size
+                    val firstVisibleIndex = listState.firstVisibleItemIndex
+                    val firstVisibleOffset = listState.firstVisibleItemScrollOffset
+
+                    // Density 환경에서 픽셀 값 계산
+                    val handleHeightPx = with(density) { handleHeightDp.toPx() }
+                    val scrollbarWidthPx = with(density) { 8.dp.toPx() }
+                    val marginEndPx = with(density) { 15.dp.toPx() }
+                    val cornerRadiusPx = with(density) { 10.dp.toPx() }
+
+                    val scrollFraction = if (totalItems > 0) {
+                        val itemHeight =
+                            listState.layoutInfo.visibleItemsInfo.firstOrNull()?.size ?: 1
+                        (firstVisibleIndex.toFloat() + (firstVisibleOffset.toFloat() / itemHeight)) / totalItems
+                    } else 0f
+
+                    val maxScrollY = constraints.maxHeight.toFloat() - handleHeightPx
+                    val scrollbarOffsetY = (maxScrollY * scrollFraction).coerceIn(0f, maxScrollY)
+
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        drawRoundRect(
+                            color = scrollBarColor.copy(alpha = 0.7f),
+                            topLeft = Offset(size.width - marginEndPx, scrollbarOffsetY),
+                            size = Size(scrollbarWidthPx, handleHeightPx),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(cornerRadiusPx)
+                        )
+                    }
                 }
             }
         }
 
-        // 하단바
+        // --- 하단바 (기존 유지) ---
         BottomAppBar {
             Row(Modifier.fillMaxWidth(), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
-                FilledTonalButton(onClick = { current = (current - 1).coerceAtLeast(0); onLineChanged(current) }) { Text("이전") }
-                Text("${current + 1} / ${lines.size}")
-                FilledTonalButton(onClick = { current = (current + 1).coerceAtMost(lines.lastIndex); onLineChanged(current) }) { Text("다음") }
+                FilledTonalButton(onClick = goToPrev) { Text("이전") }
+                TextButton(onClick = { inputPage = (current + 1).toString(); showJumpDialog = true }) {
+                    Text("${current + 1} / ${lines.size}")
+                }
+                FilledTonalButton(onClick = goToNext) { Text("다음") }
             }
         }
+    }
+
+    // --- 페이지 이동 다이얼로그 (기존 유지) ---
+    if (showJumpDialog) {
+        AlertDialog(
+            onDismissRequest = { showJumpDialog = false },
+            title = { Text("페이지 이동") },
+            text = {
+                OutlinedTextField(
+                    value = inputPage,
+                    onValueChange = { if (it.all { c -> c.isDigit() }) inputPage = it },
+                    label = { Text("이동할 라인 (1~${lines.size})") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val page = inputPage.toIntOrNull()
+                    if (page != null && page in 1..lines.size) {
+                        current = page - 1
+                        onLineChanged(current)
+                        showJumpDialog = false
+                    }
+                }) { Text("이동") }
+            }
+        )
     }
 }
